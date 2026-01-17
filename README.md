@@ -4,7 +4,7 @@ A Qt6-based hardware ID spoofing tool that supports process-specific and global 
 
 一个基于Qt6开发的硬件ID欺骗工具，支持针对特定进程和全局系统的硬件ID伪装。
 
-QQ交流群 : 
+QQ交流群 : 299515156
 
 
 ## Features - 功能特点
