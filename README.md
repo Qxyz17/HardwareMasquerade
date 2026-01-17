@@ -4,6 +4,9 @@ A Qt6-based hardware ID spoofing tool that supports process-specific and global 
 
 一个基于Qt6开发的硬件ID欺骗工具，支持针对特定进程和全局系统的硬件ID伪装。
 
+QQ交流群 : 
+
+
 ## Features - 功能特点
 
 - **Process-Specific Spoofing**: Precisely select target processes for hardware ID masquerading without affecting other programs
@@ -126,7 +129,7 @@ The author is not responsible for any damage or issues caused by using this tool
 
 ## License - 许可证
 
-MIT License
+Apache-2.0 license
 
 ## Contributing - 贡献
 
