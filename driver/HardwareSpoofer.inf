@@ -1,0 +1,72 @@
+;
+; Hardware Masquerade Kernel Driver
+;
+
+[Version]
+Signature = "$WINDOWS NT$"
+Class = System
+ClassGuid = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider = %ManufacturerName%
+DriverVer = 11/22/2023,1.0.0.0
+CatalogFile = HardwareSpoofer.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[DefaultInstall]
+OptionDesc = %ServiceDescription%
+CopyFiles = @HardwareSpoofer.sys
+
+[DefaultInstall.Services]
+AddService = HardwareSpoofer, %SPSVCINST_ASSOCSERVICE%, HardwareSpoofer_Service_Inst
+
+[DefaultUninstall]
+DelFiles = @HardwareSpoofer.sys
+
+[DefaultUninstall.Services]
+DelService = HardwareSpoofer, 0x200
+
+[HardwareSpoofer_Service_Inst]
+DisplayName = %ServiceName%
+Description = %ServiceDescription%
+ServiceType = %SERVICE_KERNEL_DRIVER%
+StartType = %SERVICE_DEMAND_START%
+ErrorControl = %SERVICE_ERROR_NORMAL%
+ServiceBinary = %12%\HardwareSpoofer.sys
+LoadOrderGroup = Extended Base
+
+[SourceDisksFiles]
+HardwareSpoofer.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[Strings]
+ManufacturerName = "Hardware Masquerade Team"
+ServiceName = "HardwareSpoofer"
+ServiceDescription = "Hardware Masquerade Kernel Driver"
+DiskName = "Hardware Masquerade Installation Disk"
+
+; Service type definitions
+SERVICE_KERNEL_DRIVER = 0x1
+SERVICE_DEMAND_START = 0x3
+SERVICE_ERROR_NORMAL = 0x1
+SPSVCINST_ASSOCSERVICE = 0x00000002
+
+; Registry modifications for test signing
+[HardwareSpoofer_Service_Inst.HW]
+AddReg = HardwareSpoofer_TestSign_AddReg
+
+[HardwareSpoofer_TestSign_AddReg]
+HKR, Parameters, "TestSign", 0x00010001, 1
+HKLM, SYSTEM\CurrentControlSet\Services\HardwareSpoofer, "Type", 0x00010001, 1
+HKLM, SYSTEM\CurrentControlSet\Services\HardwareSpoofer, "Start", 0x00010001, 3
+HKLM, SYSTEM\CurrentControlSet\Services\HardwareSpoofer, "ErrorControl", 0x00010001, 1
+HKLM, SYSTEM\CurrentControlSet\Services\HardwareSpoofer, "ImagePath", 0x00020000, "\SystemRoot\System32\drivers\HardwareSpoofer.sys"
+
+; Security descriptor for device object
+[HardwareSpoofer_Service_Inst.Security]
+AddReg = HardwareSpoofer_Security_AddReg
+
+[HardwareSpoofer_Security_AddReg]
+HKR, Security, "Security", 0x00000000, "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
