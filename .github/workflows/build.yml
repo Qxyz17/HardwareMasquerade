@@ -26,8 +26,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
-<<<<<<< HEAD
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -65,23 +66,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: HardwareMasquerade-CI-${{ github.run_number }}-${{ github.event.inputs.platform }}
-=======
-      - name: Run build script
-        shell: cmd
-        run: |
-          echo "Running build script..."
-          build.bat
-      
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: HardwareMasquerade-${{ github.run_number }}
->>>>>>> 1754cccd714efed2314119d1627a239b1fe991e1
           path: |
             output/
             dist/
           if-no-files-found: warn
-<<<<<<< HEAD
           retention-days: 30
-=======
->>>>>>> 1754cccd714efed2314119d1627a239b1fe991e1
