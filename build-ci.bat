@@ -31,45 +31,52 @@ cd gui
 REM 检查是否有 main.py
 if not exist main.py (
     echo Creating simple GUI for CI build...
+    
+    REM 使用临时文件来避免批处理解析问题
     (
         echo import sys
         echo import os
-        echo from PyQt6.QtWidgets import *
-        echo from PyQt6.QtCore import *
+        echo from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton
+        echo from PyQt6.QtCore import Qt
         echo.
         echo class MainWindow(QMainWindow^):
         echo     def __init__(self^):
-        echo         super().__init__(^)
+        echo         super().__init__()
         echo         self.setWindowTitle("Hardware Masquerade CI Build")
         echo         self.setGeometry(100, 100, 500, 400)
-        echo         .
+        echo.
         echo         # Central widget
         echo         central = QWidget()
         echo         self.setCentralWidget(central)
         echo         layout = QVBoxLayout(central)
-        echo         .
+        echo.
         echo         # Title
         echo         title = QLabel("Hardware Masquerade")
-        echo         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        echo         title.setAlignment(Qt.AlignCenter)
         echo         title.setStyleSheet("font-size: 18px; font-weight: bold; margin: 10px;")
         echo         layout.addWidget(title)
-        echo         .
+        echo.
         echo         # Info
-        echo         info = QLabel(f"CI Build - %date%")
-        echo         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        echo         import datetime
+        echo         info = QLabel(f"CI Build - {datetime.datetime.now().strftime('%%Y-%%m-%%d')}")
+        echo         info.setAlignment(Qt.AlignCenter)
         echo         layout.addWidget(info)
-        echo         .
+        echo.
         echo         # Button
         echo         btn = QPushButton("OK")
-        echo         btn.clicked.connect(QApplication.quit^)
+        echo         btn.clicked.connect(QApplication.quit)
         echo         layout.addWidget(btn)
-        echo         .
+        echo.
         echo if __name__ == "__main__":
         echo     app = QApplication(sys.argv)
         echo     window = MainWindow()
         echo     window.show()
-        echo     sys.exit(app.exec(^)^)
-    ) > main.py
+        echo     sys.exit(app.exec())
+    ) > main.py.tmp
+    
+    REM 复制临时文件到 main.py
+    copy /Y main.py.tmp main.py > nul
+    del main.py.tmp
 )
 
 REM 安装依赖
@@ -85,6 +92,7 @@ if exist dist\HardwareMasquerade.exe (
     echo [OK] GUI built successfully
 ) else (
     echo [ERROR] GUI build failed
+    dir dist
 )
 
 cd ..
