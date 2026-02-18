@@ -134,10 +134,10 @@ jobs:
             exit /b 1
           )
           
-          echo Found Visual Studio at: %%VS_PATH%%
+          echo Found Visual Studio at: %VS_PATH%
           
           REM 加载 Visual Studio 环境
-          call "%%VS_PATH%%\VC\Auxiliary\Build\vcvars64.bat"
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
           if errorlevel 1 (
             echo Failed to load Visual Studio environment!
             exit /b 1
@@ -158,10 +158,10 @@ jobs:
           )
           :found_wdk
           
-          if "%%WDK_FOUND%%"=="0" (
+          if "%WDK_FOUND%"=="0" (
             echo WDK not found, skipping driver compilation
           ) else (
-            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%%WDK_VERSION%%
+            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%WDK_VERSION%
           )
           
           echo.
@@ -170,14 +170,14 @@ jobs:
           
           REM 编译驱动（如果启用）
           if "${{ github.event.inputs.include_driver }}"=="true" (
-            if not "%%WDK_FOUND%%"=="0" (
+            if not "%WDK_FOUND%"=="0" (
               echo.
               echo [1/4] Building kernel driver...
               
               cl.exe /nologo /O2 /MT /W4 /Gz ^
-                /I"%%WDK_INCLUDE%%\km" ^
-                /I"%%WDK_INCLUDE%%\um" ^
-                /I"%%WDK_INCLUDE%%\shared" ^
+                /I"%WDK_INCLUDE%\km" ^
+                /I"%WDK_INCLUDE%\um" ^
+                /I"%WDK_INCLUDE%\shared" ^
                 /I"common" ^
                 /D_KERNEL_MODE /DDBG=1 /DUNICODE /D_UNICODE ^
                 /Feoutput\HardwareSpoofer.sys ^
@@ -281,31 +281,6 @@ BUILD_DATE = '$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")'
 BUILD_PLATFORM = '${{ env.PLATFORM }}'
 BUILD_TYPE = '${{ env.CONFIGURATION }}'
 "@ | Out-File -FilePath version.py -Encoding utf8
-          
-          # 创建简单的 GUI 程序（如果没有）
-          if (-not (Test-Path "main.py")) {
-            Write-Host "Creating simple GUI..." -ForegroundColor Yellow
-            @"
-import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel
-from PyQt6.QtCore import Qt
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Hardware Masquerade")
-        self.setGeometry(100, 100, 400, 300)
-        label = QLabel("Version: $version", self)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setGeometry(100, 100, 200, 50)
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-"@ | Out-File -FilePath main.py -Encoding utf8
-          }
           
           # 使用 PyInstaller 打包
           if (Get-Command pyinstaller -ErrorAction SilentlyContinue) {
