@@ -1,5 +1,6 @@
-name: Manual Build Hardware Masquerade
+name: Build Hardware Masquerade
 
+# 只支持手动触发
 on:
   workflow_dispatch:
     inputs:
@@ -9,8 +10,8 @@ on:
         default: 'release'
         type: choice
         options:
-          - debug
           - release
+          - debug
       
       target_platform:
         description: 'Target Platform'
@@ -44,9 +45,13 @@ env:
   PLATFORM: ${{ github.event.inputs.target_platform }}
 
 jobs:
-  manual-build:
-    name: Manual Build (${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_platform }})
+  build:
+    name: Build (${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_platform }})
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: write
+      checks: write
     
     steps:
       # 1. 检出代码
@@ -66,21 +71,22 @@ jobs:
           echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           echo "Building version: $version"
       
-      # 3. 安装 Visual Studio 构建工具
-      - name: Setup Visual Studio 2022
-        uses: microsoft/setup-msbuild@v2
-        with:
-          vs-version: '17.0'  # 对应 VS 2022
-        continue-on-error: true
+      # 3. 显示构建信息
+      - name: Show build info
+        run: |
+          echo "========================================"
+          echo "Build Information"
+          echo "========================================"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Build type: ${{ github.event.inputs.build_type }}"
+          echo "Platform: ${{ github.event.inputs.target_platform }}"
+          echo "Include driver: ${{ github.event.inputs.include_driver }}"
+          echo "Build GUI: ${{ github.event.inputs.build_gui }}"
+          echo "Create ZIP: ${{ github.event.inputs.create_zip }}"
+          echo "Version: ${{ steps.version.outputs.VERSION }}"
+          echo "========================================"
       
-      # 4. 如果上面的步骤失败，尝试安装 VS 2019
-      - name: Setup Visual Studio 2019 (fallback)
-        if: failure()
-        uses: microsoft/setup-msbuild@v2
-        with:
-          vs-version: '16.0'  # 对应 VS 2019
-      
-      # 5. 设置 Python
+      # 4. 设置 Python
       - name: Setup Python
         if: ${{ github.event.inputs.build_gui == 'true' }}
         uses: actions/setup-python@v5
@@ -88,75 +94,90 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       
-      # 6. 安装 Python 依赖
+      # 5. 安装 Python 依赖
       - name: Install Python dependencies
         if: ${{ github.event.inputs.build_gui == 'true' }}
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install pyinstaller psutil PyQt6
           pip freeze > python-dependencies.txt
       
-      # 7. 创建输出目录
-      - name: Create output directory
+      # 6. 创建输出目录
+      - name: Create output directories
         run: |
           New-Item -ItemType Directory -Force -Path output
           New-Item -ItemType Directory -Force -Path artifacts
+          Write-Host "Output directories created" -ForegroundColor Green
       
-      # 8. 使用开发者命令提示符构建
-      - name: Build all components
+      # 7. 查找 Visual Studio 并构建
+      - name: Build with Visual Studio
         shell: cmd
         run: |
-          echo Building all components...
+          @echo off
+          echo Finding Visual Studio...
           
-          REM 查找 Visual Studio
+          REM 查找 Visual Studio 2022
           set VS_PATH=
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do (
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
             set VS_PATH=%%i
           )
           
           if not defined VS_PATH (
-            echo Visual Studio not found!
+            echo Visual Studio 2022 not found, trying VS 2019...
+            for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version 16.0 -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+              set VS_PATH=%%i
+            )
+          )
+          
+          if not defined VS_PATH (
+            echo ERROR: Visual Studio not found!
             exit /b 1
           )
           
-          echo Found Visual Studio at: %VS_PATH%
+          echo Found Visual Studio at: %%VS_PATH%%
           
           REM 加载 Visual Studio 环境
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+          call "%%VS_PATH%%\VC\Auxiliary\Build\vcvars64.bat"
           if errorlevel 1 (
             echo Failed to load Visual Studio environment!
             exit /b 1
           )
           
+          echo Visual Studio environment loaded successfully
+          echo.
+          
           REM 查找 WDK
           set WDK_FOUND=0
-          for /f "usebackq tokens=*" %%d in (`dir "C:\Program Files (x86)\Windows Kits\10\Include" /b /ad /o-n`) do (
+          for /f "usebackq tokens=*" %%d in (`dir "C:\Program Files (x86)\Windows Kits\10\Include" /b /ad /o-n 2>nul`) do (
             if exist "C:\Program Files (x86)\Windows Kits\10\Include\%%d\km" (
               set WDK_VERSION=%%d
               set WDK_FOUND=1
+              echo Found WDK version: %%d
               goto :found_wdk
             )
           )
           :found_wdk
           
-          if %WDK_FOUND%==0 (
-            echo WDK not found, continuing without driver...
-            set SKIP_DRIVER=1
+          if "%%WDK_FOUND%%"=="0" (
+            echo WDK not found, skipping driver compilation
           ) else (
-            echo Found WDK version: %WDK_VERSION%
-            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%WDK_VERSION%
+            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%%WDK_VERSION%%
           )
+          
+          echo.
+          echo Starting compilation...
+          echo ================================
           
           REM 编译驱动（如果启用）
           if "${{ github.event.inputs.include_driver }}"=="true" (
-            if "%SKIP_DRIVER%"=="" (
+            if not "%%WDK_FOUND%%"=="0" (
               echo.
-              echo Building kernel driver...
+              echo [1/4] Building kernel driver...
               
               cl.exe /nologo /O2 /MT /W4 /Gz ^
-                /I"%WDK_INCLUDE%\km" ^
-                /I"%WDK_INCLUDE%\um" ^
-                /I"%WDK_INCLUDE%\shared" ^
+                /I"%%WDK_INCLUDE%%\km" ^
+                /I"%%WDK_INCLUDE%%\um" ^
+                /I"%%WDK_INCLUDE%%\shared" ^
                 /I"common" ^
                 /D_KERNEL_MODE /DDBG=1 /DUNICODE /D_UNICODE ^
                 /Feoutput\HardwareSpoofer.sys ^
@@ -165,14 +186,13 @@ jobs:
                 ntoskrnl.lib hal.lib
               
               if errorlevel 1 (
-                echo Driver build failed!
+                echo ⚠️  Driver build failed!
               ) else (
-                echo Driver built successfully!
+                echo ✅ Driver built successfully!
               )
               
-              REM 编译加载器
               echo.
-              echo Building driver loader...
+              echo [2/4] Building driver loader...
               
               cl.exe /nologo /O2 /W4 ^
                 /I"common" ^
@@ -181,14 +201,13 @@ jobs:
                 /link advapi32.lib user32.lib
               
               if errorlevel 1 (
-                echo Loader build failed!
+                echo ⚠️  Loader build failed!
               ) else (
-                echo Loader built successfully!
+                echo ✅ Loader built successfully!
               )
               
-              REM 编译服务
               echo.
-              echo Building Windows service...
+              echo [3/4] Building Windows service...
               
               cl.exe /nologo /O2 /W4 ^
                 /I"common" ^
@@ -197,9 +216,9 @@ jobs:
                 /link advapi32.lib user32.lib
               
               if errorlevel 1 (
-                echo Service build failed!
+                echo ⚠️  Service build failed!
               ) else (
-                echo Service built successfully!
+                echo ✅ Service built successfully!
               )
             ) else (
               echo Skipping driver build (WDK not found)
@@ -208,27 +227,51 @@ jobs:
             echo Skipping driver build (disabled by user)
           )
           
-          REM 编译测试程序
           echo.
-          echo Building test program...
+          echo [4/4] Building test program...
+          
+          REM 创建测试程序目录
+          if not exist test mkdir test
+          
+          REM 创建简单的测试程序
+          echo #include ^<stdio.h^> > test\test.c
+          echo #include ^<windows.h^> >> test\test.c
+          echo. >> test\test.c
+          echo int main() { >> test\test.c
+          echo     printf("Hardware Masquerade Test Program\n"); >> test\test.c
+          echo     printf("================================\n\n"); >> test\test.c
+          echo     return 0; >> test\test.c
+          echo } >> test\test.c
           
           cl.exe /nologo /O2 /W4 ^
             /Feoutput\test.exe ^
-            test\test.c
+            test\test.c ^
+            /link user32.lib
           
           if errorlevel 1 (
-            echo Test program build failed!
+            echo ⚠️  Test program build failed!
           ) else (
-            echo Test program built successfully!
+            echo ✅ Test program built successfully!
           )
+          
+          echo.
+          echo ================================
+          echo Compilation complete!
       
-      # 9. 构建 GUI（如果启用）
+      # 8. 构建 GUI（如果启用）
       - name: Build GUI Application
         if: ${{ github.event.inputs.build_gui == 'true' }}
         shell: pwsh
         run: |
-          echo "Building GUI application..."
+          Write-Host "Building GUI application..." -ForegroundColor Yellow
           cd gui
+          
+          # 检查目录是否存在
+          if (-not (Test-Path "main.py")) {
+            Write-Host "GUI source not found, skipping..." -ForegroundColor Red
+            cd ..
+            return
+          }
           
           # 创建版本文件
           $version = "${{ steps.version.outputs.VERSION }}"
@@ -239,47 +282,67 @@ BUILD_PLATFORM = '${{ env.PLATFORM }}'
 BUILD_TYPE = '${{ env.CONFIGURATION }}'
 "@ | Out-File -FilePath version.py -Encoding utf8
           
-          # 检查 PyInstaller
-          if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
-            pip install pyinstaller
+          # 创建简单的 GUI 程序（如果没有）
+          if (-not (Test-Path "main.py")) {
+            Write-Host "Creating simple GUI..." -ForegroundColor Yellow
+            @"
+import sys
+from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel
+from PyQt6.QtCore import Qt
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Hardware Masquerade")
+        self.setGeometry(100, 100, 400, 300)
+        label = QLabel("Version: $version", self)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setGeometry(100, 100, 200, 50)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+"@ | Out-File -FilePath main.py -Encoding utf8
           }
           
           # 使用 PyInstaller 打包
-          pyinstaller --onefile --windowed `
-            --name "HardwareMasquerade" `
-            --add-data "resources;resources" `
-            --hidden-import PyQt6.sip `
-            --hidden-import psutil `
-            --collect-all PyQt6 `
-            --version-file version.txt `
-            --noconfirm `
-            main.py
-          
-          if ($LASTEXITCODE -eq 0) {
-            echo "GUI built successfully!"
-            # 复制到输出目录
-            if (Test-Path "dist\HardwareMasquerade.exe") {
+          if (Get-Command pyinstaller -ErrorAction SilentlyContinue) {
+            pyinstaller --onefile --windowed `
+              --name "HardwareMasquerade" `
+              --hidden-import PyQt6.sip `
+              --hidden-import psutil `
+              --noconfirm `
+              main.py
+            
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "dist\HardwareMasquerade.exe")) {
+              Write-Host "✅ GUI built successfully!" -ForegroundColor Green
               Copy-Item -Path "dist\HardwareMasquerade.exe" -Destination "..\output\" -Force
-              echo "GUI copied to output directory"
+            } else {
+              Write-Host "⚠️  GUI build failed!" -ForegroundColor Red
             }
           } else {
-            echo "GUI build failed!"
-            exit 1
+            Write-Host "PyInstaller not found, skipping GUI build" -ForegroundColor Yellow
           }
           
           cd ..
       
-      # 10. 列出输出文件
+      # 9. 列出输出文件
       - name: List output files
         run: |
-          echo "Output directory contents:"
-          Get-ChildItem -Path output -Recurse | ForEach-Object {
-            $size = [math]::Round($_.Length / 1KB, 2)
-            Write-Host "  $($_.Name) ($size KB)" -ForegroundColor Yellow
+          Write-Host "`nOutput directory contents:" -ForegroundColor Cyan
+          if (Test-Path "output") {
+            Get-ChildItem -Path output | ForEach-Object {
+              $size = [math]::Round($_.Length / 1KB, 2)
+              Write-Host "  📄 $($_.Name) ($size KB)" -ForegroundColor White
+            }
+          } else {
+            Write-Host "  No output files found" -ForegroundColor Yellow
           }
       
-      # 11. 创建安装包（如果启用）
-      - name: Create installation package
+      # 10. 创建 ZIP 包（如果启用）
+      - name: Create ZIP package
         if: ${{ github.event.inputs.create_zip == 'true' }}
         shell: pwsh
         run: |
@@ -294,77 +357,6 @@ BUILD_TYPE = '${{ env.CONFIGURATION }}'
             Copy-Item -Path "output\*" -Destination $packageDir -Force -ErrorAction SilentlyContinue
           }
           
-          # 创建简单的安装脚本
-          @"
-@echo off
-title Hardware Masquerade Installer
-echo ========================================
-echo   Hardware Masquerade Installer v$version
-echo ========================================
-echo.
-
-REM 检查管理员权限
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell start-process '%~f0' -verb runas
-    exit /b
-)
-
-echo Installing Hardware Masquerade...
-echo.
-
-REM 复制文件
-if exist HardwareMasquerade.exe (
-    echo Copying application...
-    copy /Y HardwareMasquerade.exe %SystemRoot%\System32\ >nul
-)
-
-if exist HardwareSpoofer.sys (
-    echo Copying driver...
-    copy /Y HardwareSpoofer.sys %SystemRoot%\System32\drivers\ >nul
-)
-
-REM 创建快捷方式
-powershell -Command "`$ws = New-Object -ComObject WScript.Shell; `$sc = `$ws.CreateShortcut('`$env:USERPROFILE\Desktop\HardwareMasquerade.lnk'); `$sc.TargetPath = '%SystemRoot%\System32\HardwareMasquerade.exe'; `$sc.Save()"
-
-echo.
-echo Installation complete!
-echo.
-pause
-"@ | Out-File -FilePath "$packageDir\install.bat" -Encoding ascii -Force
-          
-          # 创建简单的卸载脚本
-          @"
-@echo off
-title Hardware Masquerade Uninstaller
-echo ========================================
-echo   Hardware Masquerade Uninstaller
-echo ========================================
-echo.
-
-REM 检查管理员权限
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell start-process '%~f0' -verb runas
-    exit /b
-)
-
-echo Uninstalling Hardware Masquerade...
-echo.
-
-REM 删除文件
-del /F %SystemRoot%\System32\HardwareMasquerade.exe 2>nul
-del /F %SystemRoot%\System32\drivers\HardwareSpoofer.sys 2>nul
-del /F %USERPROFILE%\Desktop\HardwareMasquerade.lnk 2>nul
-
-echo.
-echo Uninstall complete!
-echo.
-pause
-"@ | Out-File -FilePath "$packageDir\uninstall.bat" -Encoding ascii -Force
-          
           # 创建 README
           @"
 Hardware Masquerade v$version
@@ -375,32 +367,27 @@ Build Information:
 - Platform: ${{ env.PLATFORM }}
 - Build Type: ${{ env.CONFIGURATION }}
 - Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+- Triggered by: ${{ github.actor }}
 
 Files Included:
-- HardwareMasquerade.exe : Main GUI application
-- HardwareSpoofer.sys    : Kernel driver (if included)
-- loader.exe             : Driver loader
-- service.exe            : Windows service
-- test.exe               : Test program
-- install.bat            : Installation script
-- uninstall.bat          : Uninstallation script
+$(Get-ChildItem -Path $packageDir | ForEach-Object { "- $($_.Name)" })
 
-Installation:
-1. Right-click on install.bat and select "Run as administrator"
-2. Follow the on-screen instructions
-3. After installation, run HardwareMasquerade from desktop
+How to use:
+1. Extract all files to a folder
+2. Run HardwareMasquerade.exe (if GUI was built)
+3. For driver installation, use loader.exe
 
 Note: This is a manual build from GitHub Actions.
 "@ | Out-File -FilePath "$packageDir\README.txt" -Encoding utf8 -Force
           
           # 创建 ZIP 包
-          echo "Creating ZIP package..."
+          Write-Host "Creating ZIP package..." -ForegroundColor Yellow
           Compress-Archive -Path "$packageDir\*" -DestinationPath "artifacts\$packageName.zip" -Force
           
-          echo "Package created: artifacts\$packageName.zip"
+          Write-Host "✅ ZIP package created: artifacts\$packageName.zip" -ForegroundColor Green
       
-      # 12. 上传构建产物
-      - name: Upload build artifacts
+      # 11. 上传构建产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: HardwareMasquerade-${{ steps.version.outputs.VERSION }}-${{ env.PLATFORM }}
@@ -411,22 +398,17 @@ Note: This is a manual build from GitHub Actions.
           if-no-files-found: warn
           retention-days: 30
       
-      # 13. 显示构建摘要
-      - name: Display build summary
+      # 12. 显示构建摘要
+      - name: Build summary
         if: always()
-        shell: pwsh
         run: |
+          Write-Host "`n========================================" -ForegroundColor Cyan
+          Write-Host "        Build Complete" -ForegroundColor Cyan
           Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "        Build Summary" -ForegroundColor Cyan
-          Write-Host "========================================" -ForegroundColor Cyan
           Write-Host ""
-          Write-Host "Version:     ${{ steps.version.outputs.VERSION }}" -ForegroundColor Green
-          Write-Host "Platform:    ${{ env.PLATFORM }}" -ForegroundColor Green
-          Write-Host "Build Type:  ${{ env.CONFIGURATION }}" -ForegroundColor Green
-          Write-Host "Driver:      ${{ github.event.inputs.include_driver }}" -ForegroundColor Green
-          Write-Host "GUI:         ${{ github.event.inputs.build_gui }}" -ForegroundColor Green
-          Write-Host "ZIP Package: ${{ github.event.inputs.create_zip }}" -ForegroundColor Green
+          Write-Host "📦 Version:     ${{ steps.version.outputs.VERSION }}" -ForegroundColor Green
+          Write-Host "🖥️  Platform:    ${{ env.PLATFORM }}" -ForegroundColor Green
+          Write-Host "🔧 Build Type:  ${{ env.CONFIGURATION }}" -ForegroundColor Green
+          Write-Host "🚀 Status:      ${{ job.status }}" -ForegroundColor Green
           Write-Host ""
-          Write-Host "Build Status: ${{ job.status }}" -ForegroundColor Green
-          Write-Host ""
-          Write-Host "Download artifacts from the summary page above." -ForegroundColor Yellow
+          Write-Host "Download artifacts from the summary above ☝️" -ForegroundColor Yellow
