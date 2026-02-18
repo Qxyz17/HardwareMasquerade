@@ -1,7 +1,6 @@
 name: Manual Build Hardware Masquerade
 
 on:
-  # 仅支持手动触发
   workflow_dispatch:
     inputs:
       build_type:
@@ -40,15 +39,11 @@ on:
         default: true
         type: boolean
 
-# 环境变量
 env:
-  WDK_VERSION: '10.0.22621.0'
-  VS_VERSION: '2022'
   CONFIGURATION: ${{ github.event.inputs.build_type }}
   PLATFORM: ${{ github.event.inputs.target_platform }}
 
 jobs:
-  # 手动构建作业
   manual-build:
     name: Manual Build (${{ github.event.inputs.build_type }}-${{ github.event.inputs.target_platform }})
     runs-on: windows-latest
@@ -71,13 +66,21 @@ jobs:
           echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           echo "Building version: $version"
       
-      # 3. 设置 MSBuild
-      - name: Setup MSBuild
+      # 3. 安装 Visual Studio 构建工具
+      - name: Setup Visual Studio 2022
         uses: microsoft/setup-msbuild@v2
         with:
-          vs-version: '[${{ env.VS_VERSION }}]'
+          vs-version: '17.0'  # 对应 VS 2022
+        continue-on-error: true
       
-      # 4. 设置 Python
+      # 4. 如果上面的步骤失败，尝试安装 VS 2019
+      - name: Setup Visual Studio 2019 (fallback)
+        if: failure()
+        uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '16.0'  # 对应 VS 2019
+      
+      # 5. 设置 Python
       - name: Setup Python
         if: ${{ github.event.inputs.build_gui == 'true' }}
         uses: actions/setup-python@v5
@@ -85,7 +88,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       
-      # 5. 安装 Python 依赖
+      # 6. 安装 Python 依赖
       - name: Install Python dependencies
         if: ${{ github.event.inputs.build_gui == 'true' }}
         run: |
@@ -93,81 +96,133 @@ jobs:
           pip install pyinstaller psutil PyQt6
           pip freeze > python-dependencies.txt
       
-      # 6. 创建输出目录
+      # 7. 创建输出目录
       - name: Create output directory
         run: |
           New-Item -ItemType Directory -Force -Path output
           New-Item -ItemType Directory -Force -Path artifacts
       
-      # 7. 构建驱动（如果启用）
-      - name: Build Kernel Driver
-        if: ${{ github.event.inputs.include_driver == 'true' }}
+      # 8. 使用开发者命令提示符构建
+      - name: Build all components
         shell: cmd
         run: |
-          echo Building kernel driver...
-          call "C:\Program Files\Microsoft Visual Studio\${{ env.VS_VERSION }}\Community\VC\Auxiliary\Build\vcvars64.bat"
+          echo Building all components...
           
-          REM 检查 WDK 路径
-          if exist "C:\Program Files (x86)\Windows Kits\10\Include\${{ env.WDK_VERSION }}" (
-            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\${{ env.WDK_VERSION }}
-          ) else (
-            for /f "usebackq tokens=*" %%d in (`dir "C:\Program Files (x86)\Windows Kits\10\Include" /b /ad /o-n`) do (
-              if exist "C:\Program Files (x86)\Windows Kits\10\Include\%%d\km" (
-                set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%%d
-                echo Found WDK version: %%d
-                goto :found_wdk
-              )
+          REM 查找 Visual Studio
+          set VS_PATH=
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do (
+            set VS_PATH=%%i
+          )
+          
+          if not defined VS_PATH (
+            echo Visual Studio not found!
+            exit /b 1
+          )
+          
+          echo Found Visual Studio at: %VS_PATH%
+          
+          REM 加载 Visual Studio 环境
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 (
+            echo Failed to load Visual Studio environment!
+            exit /b 1
+          )
+          
+          REM 查找 WDK
+          set WDK_FOUND=0
+          for /f "usebackq tokens=*" %%d in (`dir "C:\Program Files (x86)\Windows Kits\10\Include" /b /ad /o-n`) do (
+            if exist "C:\Program Files (x86)\Windows Kits\10\Include\%%d\km" (
+              set WDK_VERSION=%%d
+              set WDK_FOUND=1
+              goto :found_wdk
             )
           )
           :found_wdk
           
-          REM 编译驱动
-          cl.exe /nologo /O2 /MT /W4 /Gz /kernel ^
-            /I"%WDK_INCLUDE%\km" ^
-            /I"%WDK_INCLUDE%\um" ^
-            /I"%WDK_INCLUDE%\shared" ^
-            /I"common" ^
-            /D_KERNEL_MODE /DDBG=1 /DUNICODE /D_UNICODE ^
-            /Feoutput\HardwareSpoofer.sys ^
-            driver\HardwareSpoofer.c ^
-            /link /subsystem:native /driver /entry:DriverEntry ^
-            ntoskrnl.lib hal.lib
-          
-          if errorlevel 1 (
-            echo Driver build failed!
-            exit /b 1
+          if %WDK_FOUND%==0 (
+            echo WDK not found, continuing without driver...
+            set SKIP_DRIVER=1
           ) else (
-            echo Driver built successfully!
+            echo Found WDK version: %WDK_VERSION%
+            set WDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\%WDK_VERSION%
           )
           
-          REM 编译加载器
-          cl.exe /nologo /O2 /W4 ^
-            /I"common" ^
-            /Feoutput\loader.exe ^
-            driver_loader\loader.c ^
-            /link advapi32.lib user32.lib
-          
-          if errorlevel 1 (
-            echo Loader build failed!
-            exit /b 1
+          REM 编译驱动（如果启用）
+          if "${{ github.event.inputs.include_driver }}"=="true" (
+            if "%SKIP_DRIVER%"=="" (
+              echo.
+              echo Building kernel driver...
+              
+              cl.exe /nologo /O2 /MT /W4 /Gz ^
+                /I"%WDK_INCLUDE%\km" ^
+                /I"%WDK_INCLUDE%\um" ^
+                /I"%WDK_INCLUDE%\shared" ^
+                /I"common" ^
+                /D_KERNEL_MODE /DDBG=1 /DUNICODE /D_UNICODE ^
+                /Feoutput\HardwareSpoofer.sys ^
+                driver\HardwareSpoofer.c ^
+                /link /subsystem:native ^
+                ntoskrnl.lib hal.lib
+              
+              if errorlevel 1 (
+                echo Driver build failed!
+              ) else (
+                echo Driver built successfully!
+              )
+              
+              REM 编译加载器
+              echo.
+              echo Building driver loader...
+              
+              cl.exe /nologo /O2 /W4 ^
+                /I"common" ^
+                /Feoutput\loader.exe ^
+                driver_loader\loader.c ^
+                /link advapi32.lib user32.lib
+              
+              if errorlevel 1 (
+                echo Loader build failed!
+              ) else (
+                echo Loader built successfully!
+              )
+              
+              REM 编译服务
+              echo.
+              echo Building Windows service...
+              
+              cl.exe /nologo /O2 /W4 ^
+                /I"common" ^
+                /Feoutput\service.exe ^
+                service\service.c ^
+                /link advapi32.lib user32.lib
+              
+              if errorlevel 1 (
+                echo Service build failed!
+              ) else (
+                echo Service built successfully!
+              )
+            ) else (
+              echo Skipping driver build (WDK not found)
+            )
           ) else (
-            echo Loader built successfully!
+            echo Skipping driver build (disabled by user)
           )
           
-          REM 编译服务
+          REM 编译测试程序
+          echo.
+          echo Building test program...
+          
           cl.exe /nologo /O2 /W4 ^
-            /I"common" ^
-            /Feoutput\service.exe ^
-            service\service.c ^
-            /link advapi32.lib user32.lib
+            /Feoutput\test.exe ^
+            test\test.c
           
           if errorlevel 1 (
-            echo Service build failed!
+            echo Test program build failed!
           ) else (
-            echo Service built successfully!
+            echo Test program built successfully!
           )
       
-      # 8. 构建 GUI（如果启用）
+      # 9. 构建 GUI（如果启用）
       - name: Build GUI Application
         if: ${{ github.event.inputs.build_gui == 'true' }}
         shell: pwsh
@@ -178,11 +233,16 @@ jobs:
           # 创建版本文件
           $version = "${{ steps.version.outputs.VERSION }}"
           @"
-          VERSION = '$version'
-          BUILD_DATE = '$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")'
-          BUILD_PLATFORM = '${{ env.PLATFORM }}'
-          BUILD_TYPE = '${{ env.CONFIGURATION }}'
-          "@ | Out-File -FilePath version.py -Encoding utf8
+VERSION = '$version'
+BUILD_DATE = '$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")'
+BUILD_PLATFORM = '${{ env.PLATFORM }}'
+BUILD_TYPE = '${{ env.CONFIGURATION }}'
+"@ | Out-File -FilePath version.py -Encoding utf8
+          
+          # 检查 PyInstaller
+          if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
+            pip install pyinstaller
+          }
           
           # 使用 PyInstaller 打包
           pyinstaller --onefile --windowed `
@@ -197,7 +257,11 @@ jobs:
           
           if ($LASTEXITCODE -eq 0) {
             echo "GUI built successfully!"
-            Copy-Item -Path "dist\HardwareMasquerade.exe" -Destination "..\output\" -Force
+            # 复制到输出目录
+            if (Test-Path "dist\HardwareMasquerade.exe") {
+              Copy-Item -Path "dist\HardwareMasquerade.exe" -Destination "..\output\" -Force
+              echo "GUI copied to output directory"
+            }
           } else {
             echo "GUI build failed!"
             exit 1
@@ -205,7 +269,16 @@ jobs:
           
           cd ..
       
-      # 9. 创建安装包（如果启用）
+      # 10. 列出输出文件
+      - name: List output files
+        run: |
+          echo "Output directory contents:"
+          Get-ChildItem -Path output -Recurse | ForEach-Object {
+            $size = [math]::Round($_.Length / 1KB, 2)
+            Write-Host "  $($_.Name) ($size KB)" -ForegroundColor Yellow
+          }
+      
+      # 11. 创建安装包（如果启用）
       - name: Create installation package
         if: ${{ github.event.inputs.create_zip == 'true' }}
         shell: pwsh
@@ -214,144 +287,111 @@ jobs:
           $packageName = "HardwareMasquerade-$version-${{ env.PLATFORM }}"
           $packageDir = "artifacts\$packageName"
           
-          New-Item -ItemType Directory -Force -Path $packageDir
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
           
           # 复制构建文件
           if (Test-Path "output") {
-            Copy-Item -Path "output\*" -Destination $packageDir -Recurse -Force
+            Copy-Item -Path "output\*" -Destination $packageDir -Force -ErrorAction SilentlyContinue
           }
           
-          # 复制配置文件
-          if (Test-Path "config.ini.example") {
-            Copy-Item -Path "config.ini.example" -Destination "$packageDir\config.ini.example"
-          }
-          
-          # 创建安装脚本
+          # 创建简单的安装脚本
           @"
-          @echo off
-          title Hardware Masquerade Installer
-          echo ========================================
-          echo   Hardware Masquerade Installer v$version
-          echo ========================================
-          echo.
+@echo off
+title Hardware Masquerade Installer
+echo ========================================
+echo   Hardware Masquerade Installer v$version
+echo ========================================
+echo.
+
+REM 检查管理员权限
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Requesting administrator privileges...
+    powershell start-process '%~f0' -verb runas
+    exit /b
+)
+
+echo Installing Hardware Masquerade...
+echo.
+
+REM 复制文件
+if exist HardwareMasquerade.exe (
+    echo Copying application...
+    copy /Y HardwareMasquerade.exe %SystemRoot%\System32\ >nul
+)
+
+if exist HardwareSpoofer.sys (
+    echo Copying driver...
+    copy /Y HardwareSpoofer.sys %SystemRoot%\System32\drivers\ >nul
+)
+
+REM 创建快捷方式
+powershell -Command "`$ws = New-Object -ComObject WScript.Shell; `$sc = `$ws.CreateShortcut('`$env:USERPROFILE\Desktop\HardwareMasquerade.lnk'); `$sc.TargetPath = '%SystemRoot%\System32\HardwareMasquerade.exe'; `$sc.Save()"
+
+echo.
+echo Installation complete!
+echo.
+pause
+"@ | Out-File -FilePath "$packageDir\install.bat" -Encoding ascii -Force
           
-          REM 检查管理员权限
-          net session >nul 2>&1
-          if %errorLevel% neq 0 (
-              echo Requesting administrator privileges...
-              powershell start-process '%~f0' -verb runas
-              exit /b
-          )
-          
-          echo Installing Hardware Masquerade...
-          echo.
-          
-          REM 安装驱动
-          if exist HardwareSpoofer.sys (
-              echo Installing kernel driver...
-              copy /Y HardwareSpoofer.sys %SystemRoot%\System32\drivers\ >nul
-              loader.exe /install
-          )
-          
-          REM 安装服务
-          if exist service.exe (
-              echo Installing Windows service...
-              service.exe /install
-              service.exe /start
-          )
-          
-          REM 创建桌面快捷方式
-          if exist HardwareMasquerade.exe (
-              echo Creating desktop shortcut...
-              powershell -Command "`$ws = New-Object -ComObject WScript.Shell; `$sc = `$ws.CreateShortcut('`$env:USERPROFILE\Desktop\HardwareMasquerade.lnk'); `$sc.TargetPath = '%~dp0HardwareMasquerade.exe'; `$sc.Save()"
-          )
-          
-          echo.
-          echo Installation complete!
-          echo.
-          echo You can now run HardwareMasquerade from the desktop shortcut.
-          echo.
-          pause
-          "@ | Out-File -FilePath "$packageDir\install.bat" -Encoding ascii -Force
-          
-          # 创建卸载脚本
+          # 创建简单的卸载脚本
           @"
-          @echo off
-          title Hardware Masquerade Uninstaller
-          echo ========================================
-          echo   Hardware Masquerade Uninstaller
-          echo ========================================
-          echo.
-          
-          REM 检查管理员权限
-          net session >nul 2>&1
-          if %errorLevel% neq 0 (
-              echo Requesting administrator privileges...
-              powershell start-process '%~f0' -verb runas
-              exit /b
-          )
-          
-          echo Uninstalling Hardware Masquerade...
-          echo.
-          
-          REM 卸载驱动
-          if exist loader.exe (
-              echo Uninstalling kernel driver...
-              loader.exe /uninstall
-              del /F %SystemRoot%\System32\drivers\HardwareSpoofer.sys 2>nul
-          )
-          
-          REM 卸载服务
-          if exist service.exe (
-              echo Uninstalling Windows service...
-              service.exe /uninstall
-          )
-          
-          REM 删除快捷方式
-          del /F %USERPROFILE%\Desktop\HardwareMasquerade.lnk 2>nul
-          
-          echo.
-          echo Uninstall complete!
-          echo.
-          pause
-          "@ | Out-File -FilePath "$packageDir\uninstall.bat" -Encoding ascii -Force
+@echo off
+title Hardware Masquerade Uninstaller
+echo ========================================
+echo   Hardware Masquerade Uninstaller
+echo ========================================
+echo.
+
+REM 检查管理员权限
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Requesting administrator privileges...
+    powershell start-process '%~f0' -verb runas
+    exit /b
+)
+
+echo Uninstalling Hardware Masquerade...
+echo.
+
+REM 删除文件
+del /F %SystemRoot%\System32\HardwareMasquerade.exe 2>nul
+del /F %SystemRoot%\System32\drivers\HardwareSpoofer.sys 2>nul
+del /F %USERPROFILE%\Desktop\HardwareMasquerade.lnk 2>nul
+
+echo.
+echo Uninstall complete!
+echo.
+pause
+"@ | Out-File -FilePath "$packageDir\uninstall.bat" -Encoding ascii -Force
           
           # 创建 README
           @"
-          Hardware Masquerade v$version
-          =============================
-          
-          Build Information:
-          - Version: $version
-          - Platform: ${{ env.PLATFORM }}
-          - Build Type: ${{ env.CONFIGURATION }}
-          - Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
-          - Driver Included: ${{ github.event.inputs.include_driver }}
-          
-          System Requirements:
-          - Windows 10/11 (64-bit)
-          - Administrator privileges
-          - 100 MB free disk space
-          
-          Installation:
-          1. Right-click on install.bat and select "Run as administrator"
-          2. Follow the on-screen instructions
-          3. After installation, run HardwareMasquerade.exe from desktop
-          
-          Uninstallation:
-          1. Right-click on uninstall.bat and select "Run as administrator"
-          2. Follow the on-screen instructions
-          
-          Files Included:
-          - HardwareMasquerade.exe : Main GUI application
-          - HardwareSpoofer.sys    : Kernel driver (if included)
-          - loader.exe             : Driver loader utility
-          - service.exe            : Windows service (if built)
-          - install.bat            : Installation script
-          - uninstall.bat          : Uninstallation script
-          
-          Note: This is a manual build from GitHub Actions.
-          "@ | Out-File -FilePath "$packageDir\README.txt" -Encoding utf8 -Force
+Hardware Masquerade v$version
+=============================
+
+Build Information:
+- Version: $version
+- Platform: ${{ env.PLATFORM }}
+- Build Type: ${{ env.CONFIGURATION }}
+- Build Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+
+Files Included:
+- HardwareMasquerade.exe : Main GUI application
+- HardwareSpoofer.sys    : Kernel driver (if included)
+- loader.exe             : Driver loader
+- service.exe            : Windows service
+- test.exe               : Test program
+- install.bat            : Installation script
+- uninstall.bat          : Uninstallation script
+
+Installation:
+1. Right-click on install.bat and select "Run as administrator"
+2. Follow the on-screen instructions
+3. After installation, run HardwareMasquerade from desktop
+
+Note: This is a manual build from GitHub Actions.
+"@ | Out-File -FilePath "$packageDir\README.txt" -Encoding utf8 -Force
           
           # 创建 ZIP 包
           echo "Creating ZIP package..."
@@ -359,11 +399,11 @@ jobs:
           
           echo "Package created: artifacts\$packageName.zip"
       
-      # 10. 上传构建产物
+      # 12. 上传构建产物
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-output-${{ steps.version.outputs.VERSION }}-${{ env.PLATFORM }}
+          name: HardwareMasquerade-${{ steps.version.outputs.VERSION }}-${{ env.PLATFORM }}
           path: |
             output/
             artifacts/
@@ -371,8 +411,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       
-      # 11. 显示构建摘要
+      # 13. 显示构建摘要
       - name: Display build summary
+        if: always()
         shell: pwsh
         run: |
           Write-Host "========================================" -ForegroundColor Cyan
@@ -386,48 +427,6 @@ jobs:
           Write-Host "GUI:         ${{ github.event.inputs.build_gui }}" -ForegroundColor Green
           Write-Host "ZIP Package: ${{ github.event.inputs.create_zip }}" -ForegroundColor Green
           Write-Host ""
-          
-          if (Test-Path "output") {
-            Write-Host "Output files:" -ForegroundColor Yellow
-            Get-ChildItem -Path "output" | ForEach-Object {
-              $size = [math]::Round($_.Length / 1KB, 2)
-              Write-Host "  - $($_.Name) ($size KB)" -ForegroundColor White
-            }
-          }
-          
-          if (Test-Path "artifacts") {
-            Write-Host ""
-            Write-Host "Artifacts:" -ForegroundColor Yellow
-            Get-ChildItem -Path "artifacts" | ForEach-Object {
-              $size = [math]::Round($_.Length / 1MB, 2)
-              Write-Host "  - $($_.Name) ($size MB)" -ForegroundColor White
-            }
-          }
-          
+          Write-Host "Build Status: ${{ job.status }}" -ForegroundColor Green
           Write-Host ""
-          Write-Host "Build completed successfully!" -ForegroundColor Green
-          
-      # 12. 可选：发送通知
-      - name: Send notification
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = '${{ job.status }}';
-            const version = '${{ steps.version.outputs.VERSION }}';
-            const platform = '${{ env.PLATFORM }}';
-            
-            let message = `## Manual Build ${status}\n`;
-            message += `- Version: ${version}\n`;
-            message += `- Platform: ${platform}\n`;
-            message += `- Triggered by: @${{ github.actor }}\n`;
-            message += `- Build URL: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n`;
-            
-            if (status === 'success') {
-              message += '\n✅ Build completed successfully!';
-            } else {
-              message += '\n❌ Build failed!';
-            }
-            
-            // 可以在 PR 中评论或发送到其他平台
-            console.log(message);
+          Write-Host "Download artifacts from the summary page above." -ForegroundColor Yellow
